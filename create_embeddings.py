@@ -1,12 +1,17 @@
 import chromadb
-from chromadb.utils import embedding_functions
+from chromadb.utils.embedding_functions.chroma_cloud_qwen_embedding_function import ChromaCloudQwenEmbeddingFunction, ChromaCloudQwenEmbeddingModel
 import pandas as pd
+import os
 
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"   
+EMBEDDING_MODEL = ChromaCloudQwenEmbeddingModel.QWEN3_EMBEDDING_0p6B
 COLLECTION_NAME = "job_postings"
-DB_PATH = "./chroma_db"   
-CHUNKS_PATH = "Data/documents.parquet"             
+CHUNKS_PATH = "Data/documents.parquet"     
+EMBED_DIMENSION = 768        
 TOP_K = 5
+
+CHROMA_API_KEY = os.getenv("CHROMA_API_KEY")
+CHROMA_TENANT = os.getenv("CHROMA_TENANT")
+CHROMA_DATABASE = os.getenv("CHROMA_DATABASE")
 
 
 def get_chunks(path):
@@ -27,10 +32,15 @@ def get_chunks(path):
 
 def create_embeddings (document_list, metadata_list):
 	"""Add all chunks and metadata to ChromaDB database"""
-	chroma_client = chromadb.PersistentClient(
-	    path=DB_PATH
+	chroma_client = chromadb.CloudClient(
+		api_key = CHROMA_API_KEY,
+		tenant = CHROMA_TENANT,
+		database = CHROMA_DATABASE
 	)
-	embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name = EMBEDDING_MODEL)
+	embedding_fn = ChromaCloudQwenEmbeddingFunction(
+		model = EMBEDDING_MODEL, # go with default
+		task = "text_retrieval"
+	)
 
 	# Delete collection  
 	try:
@@ -45,16 +55,17 @@ def create_embeddings (document_list, metadata_list):
 	    embedding_function = embedding_fn
 	)
 
-	step = 1000
-	length = len(document_list[:2000])
+	batch_size = 100
+	length = len(document_list)
 
-	for i in range(0, length, step):
+	for i in range(0, length, batch_size):
+		end = min(length, i+batch_size)
 		collection.add(
-			ids = [f"{j}" for j in range(i, i+step)],
-			documents = document_list[i:i+step],
-			metadatas = metadata_list[i: i+step]
+			ids = [f"{j}" for j in range(i, end)],
+			documents = document_list[i:end],
+			metadatas = metadata_list[i:end]
 		)
-		print(f"Processed {i+step}/{length} records")
+		print(f"Processed {end}/{length} records")
 
 	return collection
 
@@ -99,15 +110,3 @@ def retrieve_chunks(collection, query, metadata, top_k = TOP_K):
 		})
 
 	return final_results
-
-
-# if __name__ == "__main__":
-# 	query = "What are the top 5 skills for software engineers"
-# 	document_list, metadata_list,_,_,_ = get_chunks(CHUNKS_PATH)
-# 	print("Creating embeddings...")
-# 	collection = create_embeddings(document_list, metadata_list)
-# 	print("Finished creating embeddings. Retrieving relevant chunks...")
-# 	retrieve_chunks(collection, query)
-
-
-
