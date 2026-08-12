@@ -1,12 +1,12 @@
-import chromadb
-from chromadb.utils.embedding_functions.chroma_cloud_qwen_embedding_function import ChromaCloudQwenEmbeddingFunction, ChromaCloudQwenEmbeddingModel
+# referenced: https://docs.trychroma.com/cloud/schema/sparse-vector-search
+
+from chromadb import Schema, SparseVectorIndexConfig, K, CloudClient, Knn, Rrf, Search
+from chromadb.utils.embedding_functions import ChromaCloudSpladeEmbeddingFunction
 import pandas as pd
 import os
 
-EMBEDDING_MODEL = ChromaCloudQwenEmbeddingModel.QWEN3_EMBEDDING_0p6B
 COLLECTION_NAME = "job_postings"
 CHUNKS_PATH = "Data/documents.parquet"     
-EMBED_DIMENSION = 768        
 TOP_K = 5
 
 CHROMA_API_KEY = os.getenv("CHROMA_API_KEY")
@@ -32,14 +32,19 @@ def get_chunks(path):
 
 def create_embeddings (document_list, metadata_list):
 	"""Add all chunks and metadata to ChromaDB database"""
-	chroma_client = chromadb.CloudClient(
+	chroma_client = CloudClient(
 		api_key = CHROMA_API_KEY,
 		tenant = CHROMA_TENANT,
 		database = CHROMA_DATABASE
 	)
-	embedding_fn = ChromaCloudQwenEmbeddingFunction(
-		model = EMBEDDING_MODEL, # go with default
-		task = "text_retrieval"
+	schema = Schema()
+	sparse_ef = ChromaCloudSpladeEmbeddingFunction() # default keyword embedding model
+	schema.create_index(
+	    config=SparseVectorIndexConfig(
+	        source_key=K.DOCUMENT,
+	        embedding_function=sparse_ef
+	    ),
+	    key="sparse_embedding"
 	)
 
 	# Delete collection  
@@ -51,12 +56,12 @@ def create_embeddings (document_list, metadata_list):
 	# create new collection 
 	collection = chroma_client.create_collection(
 	    name=COLLECTION_NAME,
-	    metadata={"description": "LinkedIn Job Descriptions", "hnsw:space": "cosine"},
-	    embedding_function = embedding_fn
+	    metadata={"description": "LinkedIn Job Descriptions"},
+	    schema = schema
 	)
 
 	batch_size = 100
-	length = len(document_list)
+	length = len(document_list)//10 # reduce doc size to avoid running out of credits
 
 	for i in range(0, length, batch_size):
 		end = min(length, i+batch_size)
@@ -74,6 +79,18 @@ def create_embeddings (document_list, metadata_list):
 def retrieve_chunks(collection, query, metadata, top_k = TOP_K):
 	"""Given query, retrieve the top_k most relevant chunks and their sources"""
 
+	# use RRF for hybrid search
+	hybrid_rank = Rrf(
+	    ranks=[
+	        Knn(query=query, return_rank=True), # semantic search, default all-MiniLM-L6-v2
+	        Knn(query=query, key="sparse_embedding", return_rank=True) # keyword search
+	    ],
+	    weights=[0.7, 0.3],  # 70% semantic, 30% keyword
+	    k=60 # default
+	)
+
+
+
 	# add the user input for metadata
 	filters = ["work_type", "experience_level", "title"]
 	where = []
@@ -86,20 +103,22 @@ def retrieve_chunks(collection, query, metadata, top_k = TOP_K):
 		where = {"$and":where}
 	elif len(where) ==1:
 		where = where[0]
-
-	# no filter vs filter
-	if where:
-		results = collection.query(
-			query_texts = [query],
-			n_results = top_k,
-			where = where
-		)
-	else:
-		results = collection.query(
-			query_texts = [query],
-			n_results = top_k
-		)
+	else: 
+		where = None
 	print(where)
+
+	search_args = {
+		"rank": hybrid_rank,
+		"limit": top_k,
+		"select": ["#document", "#metadata"]
+	}
+
+	if where: 
+		search_args['where'] = where
+
+	results = collection.search(Search(**search_args))
+
+
 
 	# extract chunk and source (job_id)
 	final_results = [] 
