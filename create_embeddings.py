@@ -61,7 +61,7 @@ def create_embeddings (document_list, metadata_list):
 	)
 
 	batch_size = 100
-	length = len(document_list)//10 # reduce doc size to avoid running out of credits
+	length = len(document_list)
 
 	for i in range(0, length, batch_size):
 		end = min(length, i+batch_size)
